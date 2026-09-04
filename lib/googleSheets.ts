@@ -13,20 +13,17 @@ export type SheetRow = Record<string, string>;
 function normalizePrivateKey(raw: string) {
   let value = raw.trim();
 
-  // Accept either the PEM value itself or an accidentally pasted JSON object.
   if (value.startsWith('{')) {
     try {
       const parsed = JSON.parse(value) as { private_key?: unknown };
       if (typeof parsed.private_key === 'string') value = parsed.private_key;
     } catch {
-      // Fall through and try the normal PEM cleanup below.
+      // Continue with normal PEM cleanup.
     }
   }
 
-  // Vercel commonly stores the PEM with literal \\n characters.
   value = value.replace(/\\n/g, '\n').trim();
 
-  // Remove wrapping quotes if they were included when copying the value.
   if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
     value = value.slice(1, -1).replace(/\\n/g, '\n').trim();
   }
@@ -35,26 +32,71 @@ function normalizePrivateKey(raw: string) {
 }
 
 function sheetsClient() {
+  const serviceAccountJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   const rawPrivateKey = process.env.GOOGLE_PRIVATE_KEY;
-  const privateKey = rawPrivateKey ? normalizePrivateKey(rawPrivateKey) : '';
   const spreadsheetId = process.env.GOOGLE_SHEET_ID;
-  if (!email || !privateKey || !spreadsheetId) throw new Error('Google Sheets environment variables are not configured.');
-  if (!privateKey.includes('BEGIN PRIVATE KEY') || !privateKey.includes('END PRIVATE KEY')) {
-    throw new Error('GOOGLE_PRIVATE_KEY is not a valid PEM private key. Copy only the private_key value from the downloaded Google service-account JSON.');
+
+  if (!spreadsheetId) {
+    throw new Error('GOOGLE_SHEET_ID is not configured.');
   }
 
-  const auth = new google.auth.GoogleAuth({ credentials: { client_email: email, private_key: privateKey }, scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'] });
+  let clientEmail = email || '';
+  let privateKey = rawPrivateKey ? normalizePrivateKey(rawPrivateKey) : '';
+
+  // Preferred method: paste the downloaded Google service-account JSON as one
+  // environment variable. JSON.parse safely restores the escaped newlines in
+  // private_key and avoids Vercel copy/paste formatting problems.
+  if (serviceAccountJson) {
+    try {
+      const parsed = JSON.parse(serviceAccountJson) as {
+        client_email?: unknown;
+        private_key?: unknown;
+      };
+      if (typeof parsed.client_email === 'string') clientEmail = parsed.client_email;
+      if (typeof parsed.private_key === 'string') privateKey = normalizePrivateKey(parsed.private_key);
+    } catch {
+      throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON. Paste the complete downloaded Google service-account JSON file.');
+    }
+  }
+
+  if (!clientEmail || !privateKey) {
+    throw new Error('Google service-account credentials are not configured. Add GOOGLE_SERVICE_ACCOUNT_JSON using the downloaded Google service-account JSON file.');
+  }
+
+  if (!privateKey.includes('BEGIN PRIVATE KEY') || !privateKey.includes('END PRIVATE KEY')) {
+    throw new Error('The Google service-account private key is invalid. Use the complete downloaded service-account JSON file.');
+  }
+
+  const auth = new google.auth.GoogleAuth({
+    credentials: {
+      client_email: clientEmail,
+      private_key: privateKey,
+    },
+    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+  });
+
   return { sheets: google.sheets({ version: 'v4', auth }), spreadsheetId };
 }
 
 export async function getTabRows(tabName: string): Promise<SheetRow[]> {
   const { sheets, spreadsheetId } = sheetsClient();
-  const response = await sheets.spreadsheets.values.get({ spreadsheetId, range: `${tabName}!A:ZZ`, majorDimension: 'ROWS' });
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${tabName}!A:ZZ`,
+    majorDimension: 'ROWS',
+  });
   const values = response.data.values ?? [];
   if (!values.length) return [];
-  const headers = (values[0] ?? []).map((h: unknown, i: number) => String(h ?? `Column ${i + 1}`).trim() || `Column ${i + 1}`);
-  return values.slice(1).filter(r => r.some(v => String(v ?? '').trim() !== '')).map(row => Object.fromEntries(headers.map((h, i) => [h, String(row[i] ?? '')])));
+
+  const headers = (values[0] ?? []).map((h: unknown, i: number) =>
+    String(h ?? `Column ${i + 1}`).trim() || `Column ${i + 1}`,
+  );
+
+  return values
+    .slice(1)
+    .filter((r) => r.some((v) => String(v ?? '').trim() !== ''))
+    .map((row) => Object.fromEntries(headers.map((h, i) => [h, String(row[i] ?? '')])));
 }
 
 export const getRoughData = () => getTabRows(TAB_NAMES.rough);
@@ -65,7 +107,19 @@ export const getDateWiseReport = () => getTabRows(TAB_NAMES.date);
 
 export async function getAllSheetData() {
   const [roughData, hearingEntries, centreWise, schedule, dateWise] = await Promise.all([
-    getRoughData(), getHearingEntries(), getCentreWiseReport(), getHearingScheduleReport(), getDateWiseReport(),
+    getRoughData(),
+    getHearingEntries(),
+    getCentreWiseReport(),
+    getHearingScheduleReport(),
+    getDateWiseReport(),
   ]);
-  return { roughData, hearingEntries, centreWise, schedule, dateWise, fetchedAt: new Date().toISOString() };
+
+  return {
+    roughData,
+    hearingEntries,
+    centreWise,
+    schedule,
+    dateWise,
+    fetchedAt: new Date().toISOString(),
+  };
 }
