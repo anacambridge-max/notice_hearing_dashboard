@@ -10,11 +10,40 @@ export const TAB_NAMES = {
 
 export type SheetRow = Record<string, string>;
 
+function normalizePrivateKey(raw: string) {
+  let value = raw.trim();
+
+  // Accept either the PEM value itself or an accidentally pasted JSON object.
+  if (value.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(value) as { private_key?: unknown };
+      if (typeof parsed.private_key === 'string') value = parsed.private_key;
+    } catch {
+      // Fall through and try the normal PEM cleanup below.
+    }
+  }
+
+  // Vercel commonly stores the PEM with literal \\n characters.
+  value = value.replace(/\\n/g, '\n').trim();
+
+  // Remove wrapping quotes if they were included when copying the value.
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    value = value.slice(1, -1).replace(/\\n/g, '\n').trim();
+  }
+
+  return value;
+}
+
 function sheetsClient() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-  const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  const rawPrivateKey = process.env.GOOGLE_PRIVATE_KEY;
+  const privateKey = rawPrivateKey ? normalizePrivateKey(rawPrivateKey) : '';
   const spreadsheetId = process.env.GOOGLE_SHEET_ID;
   if (!email || !privateKey || !spreadsheetId) throw new Error('Google Sheets environment variables are not configured.');
+  if (!privateKey.includes('BEGIN PRIVATE KEY') || !privateKey.includes('END PRIVATE KEY')) {
+    throw new Error('GOOGLE_PRIVATE_KEY is not a valid PEM private key. Copy only the private_key value from the downloaded Google service-account JSON.');
+  }
+
   const auth = new google.auth.GoogleAuth({ credentials: { client_email: email, private_key: privateKey }, scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'] });
   return { sheets: google.sheets({ version: 'v4', auth }), spreadsheetId };
 }
