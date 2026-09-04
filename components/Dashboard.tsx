@@ -7,6 +7,8 @@ import { groupByCentre, groupByDate, metrics, deriveSchedule, type Row } from '@
 
 type Data = { roughData: Row[]; hearingEntries: Row[]; centreWise: Row[]; schedule: Row[]; dateWise: Row[]; fetchedAt: string };
 
+type DerivedRow = Row & { __id: string; __date: string; __centre: string; __status: string };
+
 const nav = [['Overview','/'],['Hearing Schedule','/#schedule'],['Centre Wise','/#centre'],['Date Wise','/#date'],['For Hearing Entry','/#entries'],['Rough Data','/#rough']];
 
 function Table({ rows, limit }: { rows: Row[]; limit?: number }) {
@@ -30,17 +32,21 @@ export default function Dashboard({ initialData }: { initialData: Data }) {
     finally { setBusy(false); }
   }
 
-  const schedule = useMemo(() => deriveSchedule(data.schedule), [data.schedule]);
+  const schedule = useMemo<DerivedRow[]>(() => deriveSchedule(data.schedule), [data.schedule]);
   const centreOptions = useMemo(() => [...new Set(schedule.map(r => r.__centre).filter(Boolean))].sort(), [schedule]);
-  const filtered = useMemo(() => schedule.filter(r => (!q || Object.values(r).join(' ').toLowerCase().includes(q.toLowerCase())) && (centre === 'all' || r.__centre === centre)), [schedule, q, centre]);
+  const filtered = useMemo<DerivedRow[]>(() => schedule.filter(r => (!q || Object.values(r).join(' ').toLowerCase().includes(q.toLowerCase())) && (centre === 'all' || r.__centre === centre)), [schedule, q, centre]);
   const m = metrics(data.schedule);
   const cdata = groupByCentre(data.schedule).slice(0, 12);
   const ddata = groupByDate(data.schedule).slice(-30);
 
   const exportCsv = () => {
-    const rows = filtered.map(({__id: _id, __date: _date, __centre: _centre, __status: _status, ...r}) => r);
-    const headers = rows.length ? Object.keys(rows[0]) : [];
-    const csv = [headers, ...rows.map(r => headers.map(h => `"${String(r[h] ?? '').replaceAll('"','""')}"`))].map(x => x.join(',')).join('\n');
+    const rows: Row[] = filtered.map((row) => {
+      const { __id, __date, __centre, __status, ...clean } = row;
+      void __id; void __date; void __centre; void __status;
+      return clean;
+    });
+    const headers: string[] = rows.length ? Object.keys(rows[0]) : [];
+    const csv = [headers, ...rows.map((r: Row) => headers.map((h: string) => `"${String(r[h] ?? '').replaceAll('"','""')}"`))].map(x => x.join(',')).join('\n');
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'hearing-schedule.csv'; a.click(); URL.revokeObjectURL(a.href);
   };
 
